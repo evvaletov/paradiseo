@@ -148,6 +148,17 @@ public:
         while (continuator (_pop));
     }
 
+    /**
+     * Recompute fitness and diversity assignments on the population.
+     * Useful after integrating immigrants from an island model.
+     * @param _pop the population to finalize
+     */
+    void finalize(eoPop<MOEOT>& _pop) override {
+        fitnessAssignment(_pop);
+        diversityAssignment(_pop);
+    }
+
+    bool hasFinalize() const override { return true; }
 
 protected:
 

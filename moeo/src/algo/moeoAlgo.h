@@ -42,6 +42,12 @@
  * Abstract class for multi-objective algorithms.
  */
 class moeoAlgo
-  {};
+{
+public:
+    virtual ~moeoAlgo() = default;
+
+    /** Whether this algorithm supports finalize() for post-integration updates. */
+    virtual bool hasFinalize() const { return false; }
+};
 
 #endif /*MOEOALGO_H_*/
