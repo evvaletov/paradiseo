@@ -1,11 +1,11 @@
 /*
-<smp.h>
+<SerializableBase.h>
 Copyright (C) DOLPHIN Project-Team, INRIA Lille - Nord Europe, 2006-2012
 
-Alexandre Quemy
+Eremey Valetov
 
 This software is governed by the CeCILL license under French law and
-abiding by the rules of distribution of free software.  You can  ue,
+abiding by the rules of distribution of free software.  You can  use,
 modify and/ or redistribute the software under the terms of the CeCILL
 license as circulated by CEA, CNRS and INRIA at the following URL
 "http://www.cecill.info".
@@ -27,33 +27,33 @@ ParadisEO WebSite : http://paradiseo.gforge.inria.fr
 Contact: paradiseo-help@lists.gforge.inria.fr
 */
 
-#ifndef SMP_H
-#define SMP_H
+#ifndef SERIALIZABLE_BASE_H
+#define SERIALIZABLE_BASE_H
 
-#include <MWModel.h>
-#include <scheduler.h>
-#include <SerializableBase.h>
-#include <islandModel.h>
-#include <islandModelWrapper.h>
-#include <island.h>
-#include <abstractIsland.h>
-#include <migPolicy.h>
-#include <intPolicy.h>
-#include <policyElement.h>
-#include <islandNotifier.h>
-#include <notifier.h>
+#include <serial/eoSerial.h>
+#include <string>
 
-// Topologies
-#include <topology/topology.h>
-#include <topology/complete.h>
-#include <topology/ring.h>
-#include <topology/star.h>
-#include <topology/hypercubic.h>
-#include <topology/mesh.h>
-#include <topology/customBooleanTopology.h>
-#include <topology/customBooleanTopology.h>
+/**
+ * Wrapper that makes any type T serializable via ParadisEO's eoserial framework.
+ * Used by MPI_IslandModel to serialize/deserialize populations for inter-process transfer.
+ */
+template<class T>
+class SerializableBase : public eoserial::Persistent {
+public:
+    SerializableBase();
+    SerializableBase(T base);
+    virtual ~SerializableBase();
 
-// Continuators
-#include <sharedFitContinue.h>
+    operator T&();
+    void setValue(const T& newValue);
 
-#endif
+    void unpack(const eoserial::Object* obj) override;
+    eoserial::Object* pack() const override;
+
+private:
+    T _value;
+};
+
+#include "SerializableBase.tpp"
+
+#endif // SERIALIZABLE_BASE_H
