@@ -18,6 +18,7 @@ Contact: paradiseo-help@lists.gforge.inria.fr
 #ifdef _OPENMP
 #include <omp.h>
 #endif
+#include <utils/eoLogger.h>
 
 template<template <class> class EOAlgo, class EOT, class bEOT, class algoEOT>
 template<class... Args>
@@ -116,8 +117,10 @@ template<template <class> class EOAlgo, class EOT, class bEOT, class algoEOT>
 void paradiseo::smp::Island<EOAlgo,EOT,bEOT,algoEOT>::check()
 {
     for (PolicyElement<EOT>& elem : migPolicy)
-        if (!elem(pop))
+        if (!elem(pop)) {
+            eo::log << eo::debug << "Island::check: migration policy triggered, sending migrants (pop size=" << pop.size() << ")" << std::endl;
             send(elem.getSelect());
+        }
     receive();
 }
 
@@ -141,6 +144,7 @@ void paradiseo::smp::Island<EOAlgo,EOT,bEOT,algoEOT>::send(eoSelect<EOT>& _selec
 
     eoPop<EOT> migPop;
     _select(pop, migPop);
+    eo::log << eo::debug << "Island::send: selected " << migPop.size() << " migrant(s) from pop of " << pop.size() << std::endl;
 
     eoPop<bEOT> baseMigPop;
     for (auto& indi : migPop)
@@ -180,6 +184,8 @@ void paradiseo::smp::Island<EOAlgo,EOT,bEOT,algoEOT>::receive(void)
 
     while (!listImigrants.empty()) {
         eoPop<bEOT> base_offspring = std::move(listImigrants.front());
+        eo::log << eo::debug << "Island::receive: integrating " << base_offspring.size()
+                << " immigrant(s) into pop of " << pop.size() << std::endl;
 
         eoPop<EOT> offspring;
         for (auto& indi : base_offspring)

@@ -128,6 +128,9 @@ void paradiseo::smp::MPI_IslandModel<EOT>::send(void) {
         SerializableBase<eoPop<EOT>> serializablePop(migPop);
         for (unsigned idTo : neighbors) {
             int tag = idFrom * 1000 + idTo;
+            eo::log << eo::debug << "MPI_IslandModel: rank " << mpi_rank
+                    << " sending " << migPop.size() << " migrant(s) from island "
+                    << idFrom << " to island " << idTo << " (tag=" << tag << ")" << std::endl;
             comm.send(idTo, tag, serializablePop);
         }
     }
@@ -154,6 +157,9 @@ void paradiseo::smp::MPI_IslandModel<EOT>::send(void) {
                 SerializableBase<eoPop<EOT>> receivedSerializablePop;
                 comm.recv(idFromNeighbor, tag, receivedSerializablePop);
                 eoPop<EOT> receivedPop = receivedSerializablePop;
+                eo::log << eo::debug << "MPI_IslandModel: rank " << mpi_rank
+                        << " received " << receivedPop.size() << " migrant(s) from island "
+                        << idFromNeighbor << " (tag=" << tag << ")" << std::endl;
 
                 sentMessages.push_back(std::async(std::launch::async,
                     &AIsland<EOT>::update,
