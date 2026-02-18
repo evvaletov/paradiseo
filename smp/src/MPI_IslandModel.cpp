@@ -70,8 +70,14 @@ void MPI_IslandModel<EOT>::operator()() {
         message.wait();
     sentMessages.clear();
 
-    while (!listEmigrants.empty())
-        send();
+    // Discard remaining outgoing emigrants — all islands have stopped,
+    // so migrated individuals would never be processed by recipients.
+    // Using send() here risks MPI deadlock when multiple ranks each
+    // have pending emigrants to send but no matching receives posted.
+    {
+        std::lock_guard<std::mutex> lock(m);
+        while (!listEmigrants.empty()) listEmigrants.pop();
+    }
 
     std::thread lastIntegrationThread;
     if (mpi_rank < static_cast<int>(islands.size())) {
@@ -82,6 +88,20 @@ void MPI_IslandModel<EOT>::operator()() {
 
     if (lastIntegrationThread.joinable())
         lastIntegrationThread.join();
+
+    // Wait for any async island.update() tasks launched during the drain phase.
+    // Without this, islands may be deleted while tasks still reference them.
+    for (auto& message : sentMessages)
+        message.wait();
+    sentMessages.clear();
+
+    // Cancel remaining non-blocking sends. After the polling loop and drain,
+    // any unsent data targets stopped islands — safe to discard.
+    for (auto& ps : pendingSends) {
+        MPI_Cancel(&ps.request);
+        MPI_Wait(&ps.request, MPI_STATUS_IGNORE);
+    }
+    pendingSends.clear();
 
     running = false;
 }
@@ -111,38 +131,11 @@ template<class EOT>
 void paradiseo::smp::MPI_IslandModel<EOT>::send(void) {
     auto& comm = eo::mpi::Node::comm();
 
-    eoPop<EOT> migPop;
-    unsigned idFrom = 0;
-    bool hasMigrant = false;
-    {
-        std::lock_guard<std::mutex> lock(m);
-        if (!listEmigrants.empty()) {
-            idFrom = table.getLeft()[listEmigrants.front().second];
-            migPop = std::move(listEmigrants.front().first);
-            listEmigrants.pop();
-            hasMigrant = true;
-        }
-    }
-    if (hasMigrant) {
-        std::vector<unsigned> neighbors = topo.getIdNeighbors(idFrom);
-        SerializableBase<eoPop<EOT>> serializablePop(migPop);
-        for (unsigned idTo : neighbors) {
-            int tag = idFrom * 1000 + idTo;
-            eo::log << eo::debug << "MPI_IslandModel: rank " << mpi_rank
-                    << " sending " << migPop.size() << " migrant(s) from island "
-                    << idFrom << " to island " << idTo << " (tag=" << tag << ")" << std::endl;
-            comm.send(idTo, tag, serializablePop);
-        }
-    }
-
-    // Clean up completed sends
-    sentMessages.erase(std::remove_if(sentMessages.begin(), sentMessages.end(),
-        [](std::shared_future<bool>& i) -> bool
-        { return i.wait_for(std::chrono::nanoseconds(0)) == std::future_status::ready; }
-        ),
-        sentMessages.end());
-
-    // Receive from neighbors using MPI_Iprobe (non-blocking)
+    // Receive FIRST to prevent deadlock: if both ranks try to send
+    // simultaneously with blocking MPI_Send (rendezvous protocol for
+    // large serialized objects), neither can reach the receive code.
+    // By receiving first, we post matching receives that allow the
+    // sender's MPI_Send to complete.
     if (!islands.empty() && mpi_rank < static_cast<int>(islands.size())) {
         unsigned myId = mpi_rank;
         std::vector<unsigned> neighbors = topo.getIdNeighbors(myId);
@@ -167,6 +160,71 @@ void paradiseo::smp::MPI_IslandModel<EOT>::send(void) {
                     std::move(receivedPop)));
             }
         }
+    }
+
+    // Clean up completed async tasks
+    sentMessages.erase(std::remove_if(sentMessages.begin(), sentMessages.end(),
+        [](std::shared_future<bool>& i) -> bool
+        { return i.wait_for(std::chrono::nanoseconds(0)) == std::future_status::ready; }
+        ),
+        sentMessages.end());
+
+    // Then send outgoing emigrants
+    eoPop<EOT> migPop;
+    unsigned idFrom = 0;
+    bool hasMigrant = false;
+    {
+        std::lock_guard<std::mutex> lock(m);
+        if (!listEmigrants.empty()) {
+            idFrom = table.getLeft()[listEmigrants.front().second];
+            migPop = std::move(listEmigrants.front().first);
+            listEmigrants.pop();
+            hasMigrant = true;
+        }
+    }
+    if (hasMigrant) {
+        std::vector<unsigned> neighbors = topo.getIdNeighbors(idFrom);
+
+        // Serialize once for all neighbors (same protocol as comm.send for Persistent)
+        SerializableBase<eoPop<EOT>> serializablePop(migPop);
+        eoserial::Object* obj = serializablePop.pack();
+        std::stringstream ss;
+        obj->print(ss);
+        delete obj;
+        std::string serialized = ss.str();
+        int size = static_cast<int>(serialized.size()) + 1;
+
+        for (unsigned idTo : neighbors) {
+            int tag = idFrom * 1000 + idTo;
+            eo::log << eo::debug << "MPI_IslandModel: rank " << mpi_rank
+                    << " sending " << migPop.size() << " migrant(s) from island "
+                    << idFrom << " to island " << idTo << " (tag=" << tag << ")" << std::endl;
+
+            // Send size (blocking, 4 bytes — always completes eagerly)
+            MPI_Send(&size, 1, MPI_INT, idTo, tag, MPI_COMM_WORLD);
+
+            // Send data (non-blocking to prevent rendezvous deadlock)
+            pendingSends.emplace_back();
+            PendingSend& ps = pendingSends.back();
+            ps.buffer = serialized;
+            MPI_Isend(ps.buffer.data(), size, MPI_CHAR, idTo, tag,
+                      MPI_COMM_WORLD, &ps.request);
+        }
+    }
+
+    completePendingSends();
+}
+
+template<class EOT>
+void paradiseo::smp::MPI_IslandModel<EOT>::completePendingSends() {
+    auto it = pendingSends.begin();
+    while (it != pendingSends.end()) {
+        int completed = 0;
+        MPI_Test(&it->request, &completed, MPI_STATUS_IGNORE);
+        if (completed)
+            it = pendingSends.erase(it);
+        else
+            ++it;
     }
 }
 

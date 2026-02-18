@@ -32,10 +32,13 @@ Contact: paradiseo-help@lists.gforge.inria.fr
 #define SMP_MPI_ISLAND_MODEL_H_
 
 #include <queue>
+#include <list>
 #include <algorithm>
 #include <utility>
 #include <future>
 #include <thread>
+#include <mpi.h>
+#include <sstream>
 
 #include <bimap.h>
 #include <abstractIsland.h>
@@ -74,11 +77,20 @@ protected:
     void initModel(void);
     Bimap<unsigned, AIsland<EOT>*> createTable();
 
+    // Non-blocking MPI send: buffer must stay alive until send completes
+    struct PendingSend {
+        MPI_Request request;
+        std::string buffer;
+    };
+
+    void completePendingSends();
+
     std::queue<std::pair<eoPop<EOT>,AIsland<EOT>*>> listEmigrants;
     Bimap<unsigned, AIsland<EOT>*> table;
     std::vector<std::pair<AIsland<EOT>*, bool>> islands;
     AbstractTopology& topo;
     std::vector<std::shared_future<bool>> sentMessages;
+    std::list<PendingSend> pendingSends;
     std::mutex m;
     int mpi_rank, num_mpi_ranks;
     int pollIntervalMs;
