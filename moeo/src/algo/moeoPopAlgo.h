@@ -48,13 +48,6 @@
 template < class MOEOT >
 class moeoPopAlgo : public moeoAlgo, public eoAlgo < MOEOT >
 {
-public:
-    /**
-     * Recompute fitness/diversity after external population changes (e.g. immigrant integration).
-     * Default implementation is a no-op. Override in subclasses that need it.
-     * @param _pop the population to finalize
-     */
-    virtual void finalize(eoPop<MOEOT>&) {}
 };
 
 #endif /*MOEOPOPALGO_H_*/

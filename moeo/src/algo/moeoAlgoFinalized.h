@@ -1,9 +1,6 @@
 /*
-* <moeoAlgo.h>
-* Copyright (C) DOLPHIN Project-Team, INRIA Futurs, 2006-2007
-* (C) OPAC Team, LIFL, 2002-2007
-*
-* Arnaud Liefooghe
+* <moeoAlgoFinalized.h>
+* Copyright (C) Eremey Valetov, 2026
 *
 * This software is governed by the CeCILL license under French law and
 * abiding by the rules of distribution of free software.  You can  use,
@@ -29,22 +26,36 @@
 * The fact that you are presently reading this means that you have had
 * knowledge of the CeCILL license and that you accept its terms.
 *
-* ParadisEO WebSite : http://paradiseo.gforge.inria.fr
-* Contact: paradiseo-help@lists.gforge.inria.fr
+* ParadisEO WebSite : https://nojhan.github.io/paradiseo/
+* Contact: https://github.com/nojhan/paradiseo/issues
 *
 */
 //-----------------------------------------------------------------------------
 
-#ifndef MOEOALGO_H_
-#define MOEOALGO_H_
+#ifndef MOEOALGOFINALIZED_H_
+#define MOEOALGOFINALIZED_H_
+
+#include <eoPop.h>
 
 /**
- * Abstract class for multi-objective algorithms.
+ * Interface for algorithms that support post-integration finalization.
+ *
+ * Algorithms that need to recompute internal state (fitness assignments,
+ * diversity metrics, etc.) after external population changes should
+ * inherit from this interface and implement finalize().
  */
-class moeoAlgo
+template <class MOEOT>
+class moeoAlgoFinalized
 {
 public:
-    virtual ~moeoAlgo() = default;
+    virtual ~moeoAlgoFinalized() = default;
+
+    /**
+     * Recompute algorithm-specific state after external population changes.
+     *
+     * @param _pop the population to finalize
+     */
+    virtual void finalize(eoPop<MOEOT>& _pop) = 0;
 };
 
-#endif /*MOEOALGO_H_*/
+#endif /*MOEOALGOFINALIZED_H_*/
