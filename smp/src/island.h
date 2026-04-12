@@ -43,6 +43,7 @@ Contact: paradiseo-help@lists.gforge.inria.fr
 #include <eoSelect.h>
 #include <eoAlgo.h>
 #include <eoPop.h>
+#include <algo/moeoAlgoFinalized.h>
 
 #include <abstractIsland.h>
 #include <islandModel.h>

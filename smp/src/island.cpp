@@ -204,7 +204,7 @@ void paradiseo::smp::Island<EOAlgo,EOT,bEOT,algoEOT>::receive(void)
 
         intPolicy(pop, offspring);
 
-        if (algo.hasFinalize())
+        if constexpr (std::is_base_of_v<moeoAlgoFinalized<algoEOT>, EOAlgo<algoEOT>>)
             algo.finalize(pop);
 
         listImigrants.pop();
