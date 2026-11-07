@@ -62,6 +62,7 @@ set(TEST_LIST
 		t-moeoASFAMetric
 		t-moeoASFAOrMetric
 		t-moeoExhaustiveNeighborhoodExplorer
+		t-moeoRealVectorNeighborhoodExplorer
 		t-moeoFirstImprovingNeighborhoodExplorer
 		t-moeoSimpleSubNeighborhoodExplorer
 		t-moeoNoDesimprovingNeighborhoodExplorer

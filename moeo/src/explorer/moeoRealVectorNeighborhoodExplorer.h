@@ -216,8 +216,6 @@ protected:
                 _dest.push_back(modified_individual);
 
                 MOEOT previous_explored_individual = modified_individual;
-                bool continued_to_scale = false;
-
                 for (unsigned int k = 0; k < maxntryscaling; ++k) {
                     for (unsigned int j = 0; j < modified_individual.size(); ++j)
                         random_direction[j] *= scalingfactor;
@@ -232,23 +230,17 @@ protected:
 
                     evalFunc(scaled_individual);
 
-                    if (k == maxntryscaling - 1)
-                        break;
-
-                    if (comparator(_src.objectiveVector(), scaled_individual.objectiveVector())) {
+                    const bool improves_source =
+                        comparator(_src.objectiveVector(), scaled_individual.objectiveVector());
+                    if (improves_source) {
                         _dest.push_back(scaled_individual);
-                    } else if (k < minntryscaling_eff - 1) {
-                        continued_to_scale = true;
-                    } else {
-                        break;
                     }
 
-                    if (!comparator(scaled_individual.objectiveVector(), previous_explored_individual.objectiveVector())) {
-                        if (k < minntryscaling_eff - 1)
-                            continued_to_scale = true;
-                        else
-                            break;
-                    }
+                    if (k + 1 >= minntryscaling_eff &&
+                        (!improves_source ||
+                         !comparator(previous_explored_individual.objectiveVector(),
+                                     scaled_individual.objectiveVector())))
+                        break;
 
                     previous_explored_individual = scaled_individual;
                 }
