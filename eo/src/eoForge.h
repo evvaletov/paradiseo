@@ -139,12 +139,8 @@ class eoForgeOperator : public eoForgeInterface<Itf>
 
         std::shared_ptr<Itf> instantiate_ptr(bool no_cache = true) override
         {
-            if(no_cache or _instantiated == nullptr) {
-                // if(_instantiated) {
-                    // delete _instantiated;
-                // }
+            if(no_cache or _instantiated_ptr == nullptr) {
                 _instantiated_ptr = op_constructor_ptr(_args);
-                // _instantiated = op_constructor(_args);
             }
             return _instantiated_ptr;
         }
@@ -202,7 +198,7 @@ class eoForgeOperator<Itf,Op> : public eoForgeInterface<Itf>
 
         std::shared_ptr<Itf> instantiate_ptr( bool no_cache = true ) override
         {
-            if(no_cache or _instantiated == nullptr) {
+            if(no_cache or _instantiated_ptr == nullptr) {
                 _instantiated_ptr = std::make_shared<Op>();
             }
             return _instantiated_ptr;

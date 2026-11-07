@@ -72,6 +72,7 @@ set (TEST_LIST
   t-eoPartiallyMappedXover
   t-eoEvalCmd
   t-operator-forge
+  t-eoForgeCache
   t-forge-algo
   t-algo-forged
   t-algo-forged-search
