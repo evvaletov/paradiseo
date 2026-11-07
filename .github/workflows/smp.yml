@@ -1,0 +1,24 @@
+name: SMP and MPI
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        mpi: ["OFF", "ON"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MPI
+        if: matrix.mpi == 'ON'
+        run: sudo apt-get update && sudo apt-get install -y libopenmpi-dev openmpi-bin
+      - name: Configure
+        run: >-
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+          -DSMP=ON -DMPI=${{ matrix.mpi }} -DEDO=OFF
+          -DMPIEXEC_PREFLAGS=--oversubscribe
+          -DENABLE_CMAKE_TESTING=ON -DENABLE_CMAKE_EXAMPLE=OFF
+      - name: Build
+        run: cmake --build build --target smp-tests --parallel 2
+      - name: Test SMP
+        run: ctest --test-dir build -R '^t-smp' --output-on-failure --timeout 120

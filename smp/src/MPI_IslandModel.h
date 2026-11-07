@@ -33,12 +33,16 @@ Contact: paradiseo-help@lists.gforge.inria.fr
 
 #include <queue>
 #include <list>
+#include <atomic>
+#include <mutex>
 #include <algorithm>
 #include <utility>
 #include <future>
 #include <thread>
 #include <mpi.h>
 #include <sstream>
+#include <memory>
+#include <stdexcept>
 
 #include <bimap.h>
 #include <abstractIsland.h>
@@ -73,13 +77,16 @@ public:
     bool isRunning() const;
 
 protected:
+    // Source and destination identify the route; the tag fits every MPI implementation.
+    static constexpr int migrationTag = 27182;
     void send(void);
+    void receiveMessages(bool deliver);
     void initModel(void);
     Bimap<unsigned, AIsland<EOT>*> createTable();
 
     // Non-blocking MPI send: buffer must stay alive until send completes
     struct PendingSend {
-        MPI_Request request;
+        MPI_Request request = MPI_REQUEST_NULL;
         std::string buffer;
     };
 
@@ -88,9 +95,12 @@ protected:
     std::queue<std::pair<eoPop<EOT>,AIsland<EOT>*>> listEmigrants;
     Bimap<unsigned, AIsland<EOT>*> table;
     std::vector<std::pair<AIsland<EOT>*, bool>> islands;
-    AbstractTopology& topo;
+    // The caller owns the topology and must keep it alive while the model uses it.
+    AbstractTopology* topo;
     std::vector<std::shared_future<bool>> sentMessages;
     std::list<PendingSend> pendingSends;
+    unsigned long long messagesSent = 0;
+    unsigned long long messagesReceived = 0;
     std::mutex m;
     int mpi_rank, num_mpi_ranks;
     int pollIntervalMs;

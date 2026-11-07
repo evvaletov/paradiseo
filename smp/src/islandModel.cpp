@@ -32,7 +32,7 @@ Contact: paradiseo-help@lists.gforge.inria.fr
 
 template<class EOT>
 paradiseo::smp::IslandModel<EOT>::IslandModel(AbstractTopology& _topo) :
-    topo(_topo),
+    topo(&_topo),
     running(false)
 { }
 
@@ -47,77 +47,82 @@ template<class EOT>
 void paradiseo::smp::IslandModel<EOT>::operator()()
 {
     running = true;
-
-    // INIT PART
-    // Create topology, table and initialize islands
-    initModel();
-    
-    std::vector<std::thread> threads(islands.size());
-
-    // Launching threads
-    unsigned i = 0;
-    for(auto& it : islands)
-    {
-        it.first->setRunning();
-        threads[i] = std::thread(&AIsland<EOT>::operator(), it.first);
-        i++;
-    }
-
-    // Lambda function in order to know the number of working islands
-    std::function<int()> workingIslands = [this]() -> int
-    {
-        return (int)std::count_if(std::begin(islands), std::end(islands),
-            [](std::pair<AIsland<EOT>*, bool>& i) -> bool
-            { return i.second; } );
-    };
-    
-    // SCHEDULING PART
-    while(workingIslands() > 0)
-    {
-        // Count working islands
-        for(auto& it : islands)
-        {
-            // If an island is stopped we need to isolate its node in the topology
-            if(it.second && it.first->isStopped())
-            {
-                it.second = false;
-                topo.isolateNode(table.getLeft()[it.first]);
+    std::exception_ptr failure;
+    std::vector<std::future<void>> tasks;
+    auto finishTasks = [&]() {
+        for (auto& task : tasks) {
+            if (!task.valid()) continue;
+            try {
+                task.get();
+            } catch (...) {
+                if (!failure) failure = std::current_exception();
             }
-        }        
-        // Check sending
-        send();
-        
-        std::this_thread::sleep_for(std::chrono::nanoseconds(10));
-    }
-    
-    // ENDING PART
-    // Wait the end of algorithms
-    for(auto& thread : threads)
-        thread.join();
-    
-   
-    // Wait the end of messages sending
-    for(auto& message : sentMessages)
-        message.wait();
-        
-    // Clear the sentMessages container
-    sentMessages.clear();
-        
-    // Force last integration
-    while(!listEmigrants.empty())
-        send();
-    i = 0;
-    for(auto& it : islands)
-    {
-        threads[i] = std::thread(&AIsland<EOT>::receive, it.first);
-        i++;
+        }
+        tasks.clear();
+    };
+    auto finishMessages = [&]() {
+        for (auto& message : sentMessages) {
+            if (!message.valid()) continue;
+            try {
+                message.get();
+            } catch (...) {
+                if (!failure) failure = std::current_exception();
+            }
+        }
+        sentMessages.clear();
+    };
+
+    try {
+        initModel();
+        for (auto& it : islands) {
+            it.first->setRunning();
+            tasks.push_back(std::async(std::launch::async, &AIsland<EOT>::operator(), it.first));
+        }
+
+        bool active;
+        do {
+            send();
+            {
+                std::lock_guard<std::mutex> lock(m);
+                // Drain queued batches before removing any routes. A ready
+                // worker future also means its outgoing updates have finished.
+                active = !listEmigrants.empty();
+                if (!active) {
+                    for (unsigned i = 0; i < islands.size(); ++i) {
+                        auto& it = islands[i];
+                        if (it.second &&
+                            tasks[i].wait_for(std::chrono::nanoseconds(0)) == std::future_status::ready) {
+                            it.second = false;
+                            topo->isolateNode(table.getLeft()[it.first]);
+                        }
+                        active = active || it.second;
+                    }
+                }
+            }
+            if (active) std::this_thread::yield();
+        } while (active);
+
+        finishTasks();
+        // Island tasks have finished, so no new emigrants can be queued.
+        while (!listEmigrants.empty()) send();
+        finishMessages();
+        if (!failure) {
+            for (auto& it : islands)
+                tasks.push_back(std::async(std::launch::async, &AIsland<EOT>::receive, it.first));
+        }
+    } catch (...) {
+        if (!failure) failure = std::current_exception();
     }
 
-    // Wait the end of the last integration
-    for(auto& thread : threads)
-        thread.join();
-        
-    running = false;
+    // No worker or delivery task may outlive the model invocation.
+    finishTasks();
+    finishMessages();
+    {
+        std::lock_guard<std::mutex> lock(m);
+        while (!listEmigrants.empty()) listEmigrants.pop();
+        running = false;
+    }
+    if (failure) std::rethrow_exception(failure);
 }
 
 template<class EOT>  
@@ -134,15 +139,15 @@ void paradiseo::smp::IslandModel<EOT>::setTopology(AbstractTopology& _topo)
 {
     // If we change topo, we need to protect it
     std::lock_guard<std::mutex> lock(m);
-    topo = _topo;
+    topo = &_topo;
     // If we change when the algorithm is running, we need to recontruct the topo
     if(running)
     {
-        topo.construct(islands.size());
+        topo->construct(islands.size());
         // If we change the topology during the algorithm, we need to isolate stopped islands
         for(auto it : islands)
             if(!it.second)
-                topo.isolateNode(table.getLeft()[it.first]);
+                topo->isolateNode(table.getLeft()[it.first]);
     }
 }
 
@@ -154,17 +159,21 @@ void paradiseo::smp::IslandModel<EOT>::send(void)
     {
         // Get the neighbors
         unsigned idFrom = table.getLeft()[listEmigrants.front().second];
-        std::vector<unsigned> neighbors = topo.getIdNeighbors(idFrom);
+        std::vector<unsigned> neighbors = topo->getIdNeighbors(idFrom);
         
         // Send elements to neighbors
         eoPop<EOT> migPop = std::move(listEmigrants.front().first);
-        sentMessages.erase(std::remove_if(sentMessages.begin(), sentMessages.end(), 
-            [&](std::shared_future<bool>& i) -> bool
-            { return i.wait_for(std::chrono::nanoseconds(0)) == std::future_status::ready; }
-            ), 
-            sentMessages.end());
+        for (auto it = sentMessages.begin(); it != sentMessages.end();) {
+            if (it->wait_for(std::chrono::nanoseconds(0)) != std::future_status::ready) {
+                ++it;
+                continue;
+            }
+            auto completed = *it;
+            it = sentMessages.erase(it);
+            completed.get();
+        }
         for (unsigned idTo : neighbors)
-            sentMessages.push_back(std::async(std::launch::async, &AIsland<EOT>::update, table.getRight()[idTo], std::move(migPop))); 
+            sentMessages.push_back(std::async(std::launch::async, &AIsland<EOT>::update, table.getRight()[idTo], migPop));
              
         listEmigrants.pop();
     }
@@ -180,12 +189,13 @@ bool paradiseo::smp::IslandModel<EOT>::isRunning() const
 template<class EOT> 
 void paradiseo::smp::IslandModel<EOT>::initModel(void)
 {
+    std::lock_guard<std::mutex> lock(m);
     // Preparing islands
     for(auto& it : islands)
         it.second = true; // Indicate islands are active
     
     // Construct topology according to the number of islands
-    topo.construct(islands.size());
+    topo->construct(islands.size());
     
     // Create table
     table = createTable();

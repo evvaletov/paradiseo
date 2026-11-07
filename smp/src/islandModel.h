@@ -99,7 +99,8 @@ protected:
     std::queue<std::pair<eoPop<EOT>,AIsland<EOT>*>> listEmigrants;
     Bimap<unsigned, AIsland<EOT>*> table;
     std::vector<std::pair<AIsland<EOT>*, bool>> islands;
-    AbstractTopology& topo;
+    // The caller owns the topology and must keep it alive while the model uses it.
+    AbstractTopology* topo;
     std::vector<std::shared_future<bool>> sentMessages;
     std::mutex m;
     std::atomic<bool> running;

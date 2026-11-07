@@ -37,6 +37,18 @@ set (SMP_FILE
 
 add_library(smp STATIC ${SMP_FILE})
 
+target_include_directories(smp PUBLIC
+    $<BUILD_INTERFACE:${EO_SRC_DIR}/src>
+    $<BUILD_INTERFACE:${SMP_SRC_DIR}/src>
+    $<INSTALL_INTERFACE:include${INSTALL_SUB_DIR}/eo>
+    $<INSTALL_INTERFACE:include${INSTALL_SUB_DIR}/smp>)
+find_package(Threads REQUIRED)
+target_link_libraries(smp PUBLIC Threads::Threads eoserial)
+if(MPI)
+    target_compile_definitions(smp PUBLIC WITH_MPI)
+    target_link_libraries(smp PUBLIC MPI::MPI_CXX)
+endif()
+
 install(TARGETS smp EXPORT paradiseo-targets ARCHIVE DESTINATION ${LIB} COMPONENT libraries)
 
 ######################################################################################

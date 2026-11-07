@@ -20,6 +20,8 @@ set(EOMPI_SOURCES
     )
 
 add_library(eompi STATIC ${EOMPI_SOURCES})
+target_compile_definitions(eompi PUBLIC WITH_MPI)
+target_link_libraries(eompi PUBLIC MPI::MPI_CXX eoserial)
 install(TARGETS eompi EXPORT paradiseo-targets ARCHIVE DESTINATION ${LIB} COMPONENT libraries)
 
 file(GLOB HDRS *.h)

@@ -31,6 +31,7 @@ Contact: paradiseo-help@lists.gforge.inria.fr
 #define SMP_ABSTRACT_ISLAND_H_
 
 #include <atomic>
+#include <mutex>
 
 #include <eoPop.h>
 #include <migPolicy.h>
@@ -44,11 +45,10 @@ namespace smp
 template<class bEOT>
 class IslandModel;
 
+#ifdef WITH_MPI
 template<class bEOT>
 class MPI_IslandModel;
-
-template<class bEOT>
-class Redis_IslandModel;
+#endif
 
 /** AbstractIsland: An abstract island.
 
@@ -70,8 +70,9 @@ public:
      * @param _model The model which manipulate the island.
      */
     virtual void setModel(IslandModel<bEOT>* _model) = 0;
+#ifdef WITH_MPI
     virtual void setModel(MPI_IslandModel<bEOT>*) {}
-    virtual void setModel(Redis_IslandModel<bEOT>*) {}
+#endif
     
     /**
      * Check if there is population to receive or to emigrate.

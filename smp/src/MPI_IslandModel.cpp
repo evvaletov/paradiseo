@@ -24,7 +24,7 @@ Contact: paradiseo-help@lists.gforge.inria.fr
 
 template<class EOT>
 MPI_IslandModel<EOT>::MPI_IslandModel(AbstractTopology& _topo, int _pollIntervalMs)
-    : topo(_topo), pollIntervalMs(_pollIntervalMs), running(false)
+    : topo(&_topo), pollIntervalMs(_pollIntervalMs), running(false)
 {
     MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
     MPI_Comm_size(MPI_COMM_WORLD, &num_mpi_ranks);
@@ -40,71 +40,111 @@ void paradiseo::smp::MPI_IslandModel<EOT>::add(AIsland<EOT>& _island)
 template<class EOT>
 void MPI_IslandModel<EOT>::operator()() {
     running = true;
-    initModel();
-
-    std::thread islandThread;
-    if (mpi_rank < static_cast<int>(islands.size())) {
-        auto& it = islands[mpi_rank];
-        it.first->setRunning();
-        islandThread = std::thread(&AIsland<EOT>::operator(), it.first);
+    std::future<void> islandTask;
+    std::exception_ptr failure;
+    try {
+        initModel();
+        if (mpi_rank < static_cast<int>(islands.size())) {
+            auto* island = islands[mpi_rank].first;
+            island->setRunning();
+            islandTask = std::async(std::launch::async, &AIsland<EOT>::operator(), island);
+        }
+    } catch (...) {
+        failure = std::current_exception();
     }
 
-    int localIslandRunning = 1;
-    int globalIslandRunning = 0;
-
+    int globalState[3] = {0, 0, 0};
     do {
-        localIslandRunning = (mpi_rank < static_cast<int>(islands.size()) &&
-                              !islands[mpi_rank].first->isStopped()) ? 1 : 0;
-
-        send();
-
-        MPI_Allreduce(&localIslandRunning, &globalIslandRunning, 1,
-                       MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-        if (globalIslandRunning > 0)
+        if (islandTask.valid() &&
+            islandTask.wait_for(std::chrono::nanoseconds(0)) == std::future_status::ready) {
+            try {
+                islandTask.get();
+            } catch (...) {
+                if (!failure) failure = std::current_exception();
+            }
+        }
+        if (!failure) {
+            try {
+                send();
+            } catch (...) {
+                failure = std::current_exception();
+            }
+        }
+        int queued = 0;
+        {
+            std::lock_guard<std::mutex> lock(m);
+            queued = listEmigrants.empty() ? 0 : 1;
+        }
+        int localState[3] = {islandTask.valid() ? 1 : 0, failure ? 1 : 0, queued};
+        MPI_Allreduce(localState, globalState, 3, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        if (globalState[1] != 0) break;
+        if (globalState[0] > 0)
             std::this_thread::sleep_for(std::chrono::milliseconds(pollIntervalMs));
-    } while (globalIslandRunning > 0);
+    } while (globalState[0] > 0 || globalState[2] > 0);
 
-    if (islandThread.joinable())
-        islandThread.join();
-
-    for (auto& message : sentMessages)
-        message.wait();
+    // Join the worker even when polling or the algorithm raised an exception.
+    if (islandTask.valid()) {
+        try {
+            islandTask.get();
+        } catch (...) {
+            if (!failure) failure = std::current_exception();
+        }
+    }
+    for (auto& message : sentMessages) {
+        if (!message.valid()) continue;
+        try {
+            message.get();
+        } catch (...) {
+            if (!failure) failure = std::current_exception();
+        }
+    }
     sentMessages.clear();
-
-    // Discard remaining outgoing emigrants — all islands have stopped,
-    // so migrated individuals would never be processed by recipients.
-    // Using send() here risks MPI deadlock when multiple ranks each
-    // have pending emigrants to send but no matching receives posted.
     {
         std::lock_guard<std::mutex> lock(m);
         while (!listEmigrants.empty()) listEmigrants.pop();
     }
+    // Cancellation of a send is not guaranteed to succeed. Keep receiving on
+    // every rank until all posted messages have arrived, including eager sends
+    // whose requests have already completed. No new sends are posted here.
+    unsigned long long totals[2] = {0, 0};
+    do {
+        try {
+            receiveMessages(!failure && globalState[1] == 0);
+        } catch (...) {
+            if (!failure) failure = std::current_exception();
+        }
+        completePendingSends();
+        unsigned long long local[2] = {messagesSent, messagesReceived};
+        MPI_Allreduce(local, totals, 2, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    } while (totals[1] < totals[0]);
 
-    std::thread lastIntegrationThread;
-    if (mpi_rank < static_cast<int>(islands.size())) {
-        lastIntegrationThread = std::thread([&]() {
-            islands[mpi_rank].first->receive();
-        });
-    }
-
-    if (lastIntegrationThread.joinable())
-        lastIntegrationThread.join();
-
-    // Wait for any async island.update() tasks launched during the drain phase.
-    // Without this, islands may be deleted while tasks still reference them.
-    for (auto& message : sentMessages)
-        message.wait();
-    sentMessages.clear();
-
-    // Cancel remaining non-blocking sends. After the polling loop and drain,
-    // any unsent data targets stopped islands — safe to discard.
-    for (auto& ps : pendingSends) {
-        MPI_Cancel(&ps.request);
+    for (auto& ps : pendingSends)
         MPI_Wait(&ps.request, MPI_STATUS_IGNORE);
-    }
     pendingSends.clear();
-
+    messagesSent = messagesReceived = 0;
+    for (auto& message : sentMessages) {
+        if (!message.valid()) continue;
+        try {
+            message.get();
+        } catch (...) {
+            if (!failure) failure = std::current_exception();
+        }
+    }
+    sentMessages.clear();
+    if (!failure && globalState[1] == 0 && mpi_rank < static_cast<int>(islands.size())) {
+        try {
+            islands[mpi_rank].first->receive();
+        } catch (...) {
+            failure = std::current_exception();
+        }
+    }
     running = false;
+
+    int localFailure = failure ? 1 : 0;
+    int globalFailure = 0;
+    MPI_Allreduce(&localFailure, &globalFailure, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    if (failure) std::rethrow_exception(failure);
+    if (globalFailure) throw std::runtime_error("An MPI island failed on another rank");
 }
 
 template<class EOT>
@@ -119,64 +159,29 @@ template<class EOT>
 void paradiseo::smp::MPI_IslandModel<EOT>::setTopology(AbstractTopology& _topo)
 {
     std::lock_guard<std::mutex> lock(m);
-    topo = _topo;
+    topo = &_topo;
     if (running) {
-        topo.construct(islands.size());
+        topo->construct(islands.size());
         for (auto it : islands)
             if (!it.second)
-                topo.isolateNode(table.getLeft()[it.first]);
+                topo->isolateNode(table.getLeft()[it.first]);
     }
 }
 
 template<class EOT>
 void paradiseo::smp::MPI_IslandModel<EOT>::send(void) {
-    // Receive first, then send — prevents accumulation of unprocessed messages.
-    if (!islands.empty() && mpi_rank < static_cast<int>(islands.size())) {
-        unsigned myId = mpi_rank;
-        std::vector<unsigned> neighbors = topo.getIdNeighbors(myId);
-
-        for (unsigned idFromNeighbor : neighbors) {
-            int tag = idFromNeighbor * 1000 + mpi_rank;
-            int flag = 0;
-            MPI_Status mpiStatus;
-            MPI_Iprobe(idFromNeighbor, tag, MPI_COMM_WORLD, &flag, &mpiStatus);
-
-            if (flag) {
-                // Single-message receive: MPI_Iprobe confirmed the complete
-                // message is available, so MPI_Recv returns immediately.
-                // This avoids the two-message protocol (size + data) in
-                // comm.recv(), which can deadlock when the size message
-                // arrives before the data message is progressed by MPI.
-                int count = 0;
-                MPI_Get_count(&mpiStatus, MPI_CHAR, &count);
-                std::string serialized(count, '\0');
-                MPI_Recv(&serialized[0], count, MPI_CHAR, idFromNeighbor, tag,
-                         MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-
-                eoserial::Object* obj = eoserial::Parser::parse(serialized);
-                SerializableBase<eoPop<EOT>> receivedSerializablePop;
-                receivedSerializablePop.unpack(obj);
-                delete obj;
-
-                eoPop<EOT> receivedPop = receivedSerializablePop;
-                eo::log << eo::debug << "MPI_IslandModel: rank " << mpi_rank
-                        << " received " << receivedPop.size() << " migrant(s) from island "
-                        << idFromNeighbor << " (tag=" << tag << ")" << std::endl;
-
-                sentMessages.push_back(std::async(std::launch::async,
-                    &AIsland<EOT>::update,
-                    table.getRight()[myId],
-                    std::move(receivedPop)));
-            }
-        }
-    }
+    receiveMessages(true);
 
     // Clean up completed async tasks
-    sentMessages.erase(std::remove_if(sentMessages.begin(), sentMessages.end(),
-        [](std::shared_future<bool>& i) -> bool
-        { return i.wait_for(std::chrono::nanoseconds(0)) == std::future_status::ready; }
-        ),
-        sentMessages.end());
+    for (auto it = sentMessages.begin(); it != sentMessages.end();) {
+        if (it->wait_for(std::chrono::nanoseconds(0)) != std::future_status::ready) {
+            ++it;
+            continue;
+        }
+        auto completed = *it;
+        it = sentMessages.erase(it);
+        completed.get();
+    }
 
     // Then send outgoing emigrants
     eoPop<EOT> migPop;
@@ -192,19 +197,22 @@ void paradiseo::smp::MPI_IslandModel<EOT>::send(void) {
         }
     }
     if (hasMigrant) {
-        std::vector<unsigned> neighbors = topo.getIdNeighbors(idFrom);
+        std::vector<unsigned> neighbors;
+        {
+            std::lock_guard<std::mutex> lock(m);
+            neighbors = topo->getIdNeighbors(idFrom);
+        }
 
         // Serialize once for all neighbors (same protocol as comm.send for Persistent)
         SerializableBase<eoPop<EOT>> serializablePop(migPop);
-        eoserial::Object* obj = serializablePop.pack();
+        std::unique_ptr<eoserial::Object> obj(serializablePop.pack());
         std::stringstream ss;
         obj->print(ss);
-        delete obj;
         std::string serialized = ss.str();
         int size = static_cast<int>(serialized.size()) + 1;
 
         for (unsigned idTo : neighbors) {
-            int tag = idFrom * 1000 + idTo;
+            const int tag = migrationTag;
             eo::log << eo::debug << "MPI_IslandModel: rank " << mpi_rank
                     << " sending " << migPop.size() << " migrant(s) from island "
                     << idFrom << " to island " << idTo << " (tag=" << tag << ")" << std::endl;
@@ -217,10 +225,56 @@ void paradiseo::smp::MPI_IslandModel<EOT>::send(void) {
             ps.buffer = serialized;
             MPI_Isend(ps.buffer.data(), size, MPI_CHAR, idTo, tag,
                       MPI_COMM_WORLD, &ps.request);
+            ++messagesSent;
         }
     }
 
     completePendingSends();
+}
+
+template<class EOT>
+void paradiseo::smp::MPI_IslandModel<EOT>::receiveMessages(bool deliver) {
+    if (!islands.empty() && mpi_rank < static_cast<int>(islands.size())) {
+        unsigned myId = mpi_rank;
+        // Incoming edges need not match this island's outgoing neighbors.
+        // Also accept messages sent before a topology change.
+        for (int idFromNeighbor = 0; idFromNeighbor < num_mpi_ranks; ++idFromNeighbor) {
+            const int tag = migrationTag;
+            int flag = 0;
+            MPI_Status mpiStatus;
+            MPI_Iprobe(idFromNeighbor, tag, MPI_COMM_WORLD, &flag, &mpiStatus);
+
+            if (flag) {
+                // Single-message receive: MPI_Iprobe confirmed the complete
+                // message is available, so MPI_Recv returns immediately.
+                // This avoids the two-message protocol (size + data) in
+                // comm.recv(), which can deadlock when the size message
+                // arrives before the data message is progressed by MPI.
+                int count = 0;
+                MPI_Get_count(&mpiStatus, MPI_CHAR, &count);
+                std::string serialized(count, '\0');
+                MPI_Recv(&serialized[0], count, MPI_CHAR, idFromNeighbor, tag,
+                         MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                ++messagesReceived;
+                if (!deliver) continue;
+
+                std::unique_ptr<eoserial::Object> obj(eoserial::Parser::parse(serialized));
+                SerializableBase<eoPop<EOT>> receivedSerializablePop;
+                receivedSerializablePop.unpack(obj.get());
+
+                eoPop<EOT> receivedPop = receivedSerializablePop;
+                eo::log << eo::debug << "MPI_IslandModel: rank " << mpi_rank
+                        << " received " << receivedPop.size() << " migrant(s) from island "
+                        << idFromNeighbor << " (tag=" << tag << ")" << std::endl;
+
+                sentMessages.push_back(std::async(std::launch::async,
+                    &AIsland<EOT>::update,
+                    table.getRight()[myId],
+                    std::move(receivedPop)));
+            }
+        }
+    }
+
 }
 
 template<class EOT>
@@ -249,13 +303,14 @@ void paradiseo::smp::MPI_IslandModel<EOT>::initModel(void)
         eo::log << eo::errors << "MPI_IslandModel: number of MPI ranks ("
                 << num_mpi_ranks << ") exceeds number of islands + 1 ("
                 << islands.size() + 1 << ")" << std::endl;
-        MPI_Abort(MPI_COMM_WORLD, 1);
+        throw std::invalid_argument("MPI_IslandModel: number of MPI ranks exceeds number of islands + 1");
     }
 
+    std::lock_guard<std::mutex> lock(m);
     for (auto& it : islands)
         it.second = true;
 
-    topo.construct(islands.size());
+    topo->construct(islands.size());
     table = createTable();
 }
 

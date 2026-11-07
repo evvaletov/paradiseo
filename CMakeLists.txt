@@ -91,6 +91,11 @@ set(EDO_USE_LIB "Eigen3" CACHE STRING "Which linear algebra library to use to bu
 set(SMP "false" CACHE BOOL "Build the SMP module")
 set(MPI "false" CACHE BOOL "Build the MPI module")
 
+# Discover MPI before configuring modules that use its headers.
+if(MPI AND NOT EO_ONLY)
+    find_package(MPI REQUIRED)
+endif()
+
 ## EO Module
 set(MODULE_NAME "Paradiseo")
 set(DOXYGEN_CONFIG_DIR ${CMAKE_CURRENT_SOURCE_DIR}/doxygen)
@@ -126,11 +131,6 @@ if(NOT EO_ONLY)
 
     ## MPI Module
     if(MPI)
-        find_package(MPI REQUIRED)
-        add_definitions(-DWITH_MPI)
-        set(CMAKE_CXX_COMPILE_FLAGS ${CMAKE_CXX_COMPILE_FLAGS} ${MPI_COMPILE_FLAGS})
-        set(CMAKE_CXX_LINK_FLAGS ${CMAKE_CXX_LINK_FLAGS} ${MPI_LINK_FLAGS})
-        include_directories(${MPI_INCLUDE_PATH})
         add_subdirectory(${MPI_SRC_DIR})
     endif()
 endif()

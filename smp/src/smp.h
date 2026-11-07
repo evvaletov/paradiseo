@@ -34,7 +34,9 @@ Contact: paradiseo-help@lists.gforge.inria.fr
 #include <scheduler.h>
 #include <SerializableBase.h>
 #include <islandModel.h>
+#ifdef WITH_MPI
 #include <MPI_IslandModel.h>
+#endif
 #include <islandModelWrapper.h>
 #include <island.h>
 #include <abstractIsland.h>

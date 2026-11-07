@@ -79,11 +79,23 @@ template<template <class> class EOAlgo, class EOT, class bEOT, class algoEOT>
 void paradiseo::smp::Island<EOAlgo,EOT,bEOT,algoEOT>::operator()()
 {
     stopped = false;
-    algo(pop);
+    std::exception_ptr failure;
+    try {
+        algo(pop);
+    } catch (...) {
+        failure = std::current_exception();
+    }
     stopped = true;
-    for (auto& message : sentMessages)
-        message.wait();
+    for (auto& message : sentMessages) {
+        if (!message.valid()) continue;
+        try {
+            message.get();
+        } catch (...) {
+            if (!failure) failure = std::current_exception();
+        }
+    }
     sentMessages.clear();
+    if (failure) std::rethrow_exception(failure);
 }
 
 template<template <class> class EOAlgo, class EOT, class bEOT, class algoEOT>
@@ -93,19 +105,14 @@ void paradiseo::smp::Island<EOAlgo,EOT,bEOT,algoEOT>::setModel(IslandModel<bEOT>
     modelKind_ = IslandModelKind::Shared;
 }
 
+#ifdef WITH_MPI
 template<template <class> class EOAlgo, class EOT, class bEOT, class algoEOT>
 void paradiseo::smp::Island<EOAlgo,EOT,bEOT,algoEOT>::setModel(MPI_IslandModel<bEOT>* _model)
 {
     mpiModel_ = _model;
     modelKind_ = IslandModelKind::MPI;
 }
-
-template<template <class> class EOAlgo, class EOT, class bEOT, class algoEOT>
-void paradiseo::smp::Island<EOAlgo,EOT,bEOT,algoEOT>::setModel(Redis_IslandModel<bEOT>* _model)
-{
-    redisModel_ = _model;
-    modelKind_ = IslandModelKind::Redis;
-}
+#endif
 
 template<template <class> class EOAlgo, class EOT, class bEOT, class algoEOT>
 eoPop<EOT>& paradiseo::smp::Island<EOAlgo,EOT,bEOT,algoEOT>::getPop() const
@@ -150,11 +157,15 @@ void paradiseo::smp::Island<EOAlgo,EOT,bEOT,algoEOT>::send(eoSelect<EOT>& _selec
     for (auto& indi : migPop)
         baseMigPop.push_back(std::move(convertToBase(indi)));
 
-    sentMessages.erase(std::remove_if(sentMessages.begin(), sentMessages.end(),
-        [](std::shared_future<bool>& i) -> bool
-        { return i.wait_for(std::chrono::nanoseconds(0)) == std::future_status::ready; }
-        ),
-        sentMessages.end());
+    for (auto it = sentMessages.begin(); it != sentMessages.end();) {
+        if (it->wait_for(std::chrono::nanoseconds(0)) != std::future_status::ready) {
+            ++it;
+            continue;
+        }
+        auto completed = *it;
+        it = sentMessages.erase(it);
+        completed.get();
+    }
 
     switch (modelKind_) {
         case IslandModelKind::Shared:
@@ -162,16 +173,13 @@ void paradiseo::smp::Island<EOAlgo,EOT,bEOT,algoEOT>::send(eoSelect<EOT>& _selec
                 &IslandModel<bEOT>::update, sharedModel_,
                 std::move(baseMigPop), this));
             break;
+#ifdef WITH_MPI
         case IslandModelKind::MPI:
             sentMessages.push_back(std::async(std::launch::async,
                 &MPI_IslandModel<bEOT>::update, mpiModel_,
                 std::move(baseMigPop), this));
             break;
-        case IslandModelKind::Redis:
-            sentMessages.push_back(std::async(std::launch::async,
-                &Redis_IslandModel<bEOT>::update, redisModel_,
-                std::move(baseMigPop), this));
-            break;
+#endif
         case IslandModelKind::None:
             break;
     }

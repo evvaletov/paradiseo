@@ -22,6 +22,7 @@ set (TEST_LIST
         t-smpMI_Wrapper
         t-smpCustomTopo
         t-smpSharedFitContinue
+        t-smpModelLifecycle
 		)
 
 ######################################################################################
@@ -35,6 +36,20 @@ foreach (test ${TEST_LIST})
     add_test(${test} ${test}) 
     install(TARGETS ${test} RUNTIME DESTINATION share${INSTALL_SUB_DIR}/smp/test COMPONENT tests)
 endforeach (test)
+
+target_include_directories(t-smpModelLifecycle PRIVATE ${MOEO_SRC_DIR}/src)
+add_custom_target(smp-tests DEPENDS ${TEST_LIST})
+
+if(MPI)
+    add_executable(t-smpMPIIslandModel t-smpMPIIslandModel.cpp)
+    target_link_libraries(t-smpMPIIslandModel smp eo eoutils)
+    add_dependencies(smp-tests t-smpMPIIslandModel eompi)
+    add_test(NAME t-smpMPIIslandModel
+        COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 3 ${MPIEXEC_PREFLAGS}
+        $<TARGET_FILE:t-smpMPIIslandModel> ${MPIEXEC_POSTFLAGS})
+    set_tests_properties(t-smpMPIIslandModel PROPERTIES TIMEOUT 60 PROCESSORS 3)
+endif()
+set_tests_properties(t-smpModelLifecycle PROPERTIES TIMEOUT 30)
 
 execute_process(
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

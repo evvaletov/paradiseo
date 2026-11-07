@@ -43,7 +43,6 @@ Contact: paradiseo-help@lists.gforge.inria.fr
 #include <eoSelect.h>
 #include <eoAlgo.h>
 #include <eoPop.h>
-#include <algo/moeoAlgoFinalized.h>
 
 #include <abstractIsland.h>
 #include <islandModel.h>
@@ -53,7 +52,12 @@ Contact: paradiseo-help@lists.gforge.inria.fr
 #include <contWrapper.h>
 #include <contDispatching.h>
 
+#ifdef WITH_MPI
 #include <MPI_IslandModel.h>
+#endif
+
+template<class EOT>
+class moeoAlgoFinalized;
 
 namespace paradiseo
 {
@@ -117,8 +121,9 @@ public:
     void operator()(void);
 
     virtual void setModel(IslandModel<bEOT>* _model);
+#ifdef WITH_MPI
     virtual void setModel(MPI_IslandModel<bEOT>* _model);
-    virtual void setModel(Redis_IslandModel<bEOT>* _model);
+#endif
 
     eoPop<EOT>& getPop() const;
     virtual void check(void);
@@ -139,11 +144,17 @@ protected:
     std::atomic<bool> stopped;
     std::vector<std::shared_future<bool>> sentMessages;
 
-    enum class IslandModelKind { None, Shared, MPI, Redis };
+    enum class IslandModelKind {
+        None, Shared,
+#ifdef WITH_MPI
+        MPI,
+#endif
+    };
     IslandModelKind modelKind_ = IslandModelKind::None;
     IslandModel<bEOT>* sharedModel_ = nullptr;
+#ifdef WITH_MPI
     MPI_IslandModel<bEOT>* mpiModel_ = nullptr;
-    Redis_IslandModel<bEOT>* redisModel_ = nullptr;
+#endif
 
     std::function<EOT(bEOT&)> convertFromBase;
     std::function<bEOT(EOT&)> convertToBase;
